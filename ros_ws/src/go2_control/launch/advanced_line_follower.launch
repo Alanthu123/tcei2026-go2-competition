@@ -4,10 +4,14 @@
         name="advanced_line_follower"
         output="screen">
 
-    <param name="linear_speed" value="0.42"   />
-    <param name="pid_kp"       value="0.01"  />
-    <param name="pid_kd"       value="0.0015" />
-    <param name="scan_rows"    value="10"     />
+    <param name="linear_speed"       value="0.8"   />
+    <param name="linear_speed_min"   value="0.3"   />
+    <param name="pid_kp"             value="0.025"  />
+    <param name="pid_kd"             value="0.002"  />
+    <param name="ang_limit"          value="1.5"   />
+    <param name="scan_rows"          value="10"     />
+    <param name="err_smooth_alpha"   value="0.4"   />
+    <param name="speed_decay_width"  value="80.0"  />
 
     <rosparam file="$(find go2_control)/config/bev.yaml" command="load" />
   </node>

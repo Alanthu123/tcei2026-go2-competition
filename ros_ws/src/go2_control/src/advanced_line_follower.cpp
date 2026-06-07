@@ -31,13 +31,16 @@ public:
     explicit AdvancedLineFollower(ros::NodeHandle &nh)
         : it_(nh), run_line_follow_(false), ep_(0.0), ei_(0.0), el_(0.0)
     {
-        nh.param("linear_speed", v_forward_, 0.5);
-        nh.param("pid_kp", kp_, 0.007);
+        nh.param("linear_speed", v_forward_, 0.8);
+        nh.param("linear_speed_min", v_min_, 0.3);
+        nh.param("pid_kp", kp_, 0.025);
         nh.param("pid_ki", ki_, 0.0);
-        nh.param("pid_kd", kd_, 0.001);
-        nh.param("ang_limit", ang_lim_, 1.2);
-        nh.param("scan_rows", scan_rows_, 8);
+        nh.param("pid_kd", kd_, 0.002);
+        nh.param("ang_limit", ang_lim_, 1.5);
+        nh.param("scan_rows", scan_rows_, 10);
         nh.param("v_thresh", v_thresh_, 60.0);
+        nh.param("err_smooth_alpha", err_alpha_, 0.4);
+        nh.param("speed_decay_width", speed_decay_width_, 80.0);
 
         nh.param("perspective/enable", use_bev_, true);
         if (use_bev_)
@@ -160,7 +163,19 @@ private:
         cv::imshow("Mask on TopRegion", mask);
 
         std::vector<cv::Point> pts;
-        cv::findNonZero(mask, pts);
+        // 只扫描底部 scan_rows_ 行, 聚焦靠近机器人的线段, 响应更快
+        if (scan_rows_ > 0 && mask.rows > scan_rows_)
+        {
+            cv::Rect roi(0, mask.rows - scan_rows_, mask.cols, scan_rows_);
+            cv::findNonZero(mask(roi), pts);
+            // 偏移回原图坐标
+            for (auto &p : pts)
+                p.y += (mask.rows - scan_rows_);
+        }
+        else
+        {
+            cv::findNonZero(mask, pts);
+        }
         bool line_found = (pts.size() > 50);
         double err = 0.0;
         if (line_found)
@@ -182,9 +197,15 @@ private:
             cv::imshow("BEV or TopRegion", b);
         }
 
-        err = 0.6 * err + 0.4 * ep_;
+        // 自适应误差平滑: 小误差快速响应，大误差加大平滑
+        double smooth_factor = (std::abs(err) < 20.0) ? 0.2 : err_alpha_;
+        err = (1.0 - smooth_factor) * err + smooth_factor * ep_;
         ep_ = err;
-        ei_ += (line_found ? err : 0);
+        // 积分抗饱和: 丢线时衰减积分，防止积分饱和
+        if (line_found)
+            ei_ += err;
+        else
+            ei_ *= 0.8;
         double ang = 0.0;
         if (line_found)
         {
@@ -194,10 +215,14 @@ private:
             el_ = err;
         }
 
+        // 自适应速度: 线在中心时全速, 偏离越大速度越低
+        double abs_err_px = std::abs(err);
+        double speed_scale = std::max(0.3, 1.0 - abs_err_px / speed_decay_width_);
+
         geometry_msgs::Twist cmd;
         if (line_found)
         {
-            cmd.linear.x = v_forward_;
+            cmd.linear.x = v_forward_ * speed_scale;
             cmd.angular.z = ang;
         }
         else
@@ -215,8 +240,9 @@ private:
     ros::Subscriber cmd_sub_;
     ros::Publisher pub_;
 
-    double v_forward_, kp_, ki_, kd_, ang_lim_, v_thresh_;
+    double v_forward_, v_min_, kp_, ki_, kd_, ang_lim_, v_thresh_;
     int scan_rows_;
+    double err_alpha_, speed_decay_width_;
 
     bool use_bev_;
     cv::Mat M_;

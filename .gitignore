@@ -1,0 +1,82 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+.env
+.venv
+venv/
+
+# ===== C++ / ROS =====
+build/
+devel/
+install/
+logs/
+*.o
+*.lo
+*.la
+*.al
+*.so.*
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+CTestTestfile.cmake
+
+# ===== IDE =====
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ===== Large binary / model files =====
+*.pt
+*.onnx
+*.pkl
+*.jit
+*.bin
+*.h5
+*.pb
+*.weights
+*.engine
+*.plan
+
+# ===== Isaac Sim =====
+*.usd
+*.usdc
+*.usda
+*.kit
+*.urdf
+*.stl
+*.glb
+*.ply
+
+# ===== Textures / images (keep only if essential) =====
+*.jpg
+*.jpeg
+*.png
+*.hdr
+*.tif
+*.tiff
+
+# ===== Logs =====
+*.log
+MUJOCO_LOG.TXT
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+
+# ===== Wandb =====
+wandb/
+
+# ===== Exception: keep specific files =====
+# Keep the test image for inference
+!inference/Embodied/inference/step.jpg
+# Keep the map PGM file for navigation
+!ros_ws/src/go2_nav/map/nav.pgm

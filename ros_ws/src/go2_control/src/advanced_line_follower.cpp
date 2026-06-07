@@ -22,6 +22,7 @@
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/opencv.hpp>
 #include <xmlrpcpp/XmlRpcValue.h>
+#include <cmath>
 #include <vector>
 #include <sensor_msgs/image_encodings.h>
 
@@ -185,17 +186,44 @@ private:
             float vx = line[0], vy = line[1];
             float x0 = line[2], y0 = line[3];
             float rows = float(mask.rows);
-            float t = (rows - y0) / vy;
-            float x_ground = x0 + t * vx;
-            err = double(x_ground - mask.cols / 2.0);
 
-            cv::Point p1(int(x0 - vx * 100), int(y0 - vy * 100));
-            cv::Point p2(int(x0 + vx * 100), int(y0 + vy * 100));
-            cv::line(b, p1, p2, cv::Scalar(0, 0, 255), 2);
-            cv::circle(b, cv::Point(int(x_ground), int(rows)), 5, cv::Scalar(0, 255, 0), -1);
+            // 防止 vy≈0 导致除零产生 inf/nan (水平线不适用此方法)
+            if (std::abs(vy) > 0.05f)
+            {
+                float t = (rows - y0) / vy;
+                float x_ground = x0 + t * vx;
+                err = double(x_ground - mask.cols / 2.0);
+
+                cv::Point p1(int(x0 - vx * 100), int(y0 - vy * 100));
+                cv::Point p2(int(x0 + vx * 100), int(y0 + vy * 100));
+                cv::line(b, p1, p2, cv::Scalar(0, 0, 255), 2);
+                cv::circle(b, cv::Point(int(x_ground), int(rows)), 5, cv::Scalar(0, 255, 0), -1);
+            }
+            else
+            {
+                // vy≈0: 线接近水平, 用质心法兜底
+                double cx = 0.0;
+                for (const auto &p : pts)
+                    cx += p.x;
+                cx /= pts.size();
+                err = cx - mask.cols / 2.0;
+                line_found = (pts.size() > 80);  // 提高阈值, 确保有足够点
+            }
 
             cv::imshow("BEV or TopRegion", b);
         }
+
+        // NaN/Inf 安全检查: 所有进入 PID 的数值必须是有限值
+        if (!std::isfinite(err))
+        {
+            err = 0.0;
+            line_found = false;
+        }
+
+        // NaN/Inf 安全检查: 所有历史状态必须是有限值, 防止残留 NaN 传播
+        if (!std::isfinite(ep_)) ep_ = 0.0;
+        if (!std::isfinite(ei_)) ei_ = 0.0;
+        if (!std::isfinite(el_)) el_ = 0.0;
 
         // 自适应误差平滑: 小误差快速响应，大误差加大平滑
         double smooth_factor = (std::abs(err) < 20.0) ? 0.2 : err_alpha_;
@@ -229,7 +257,11 @@ private:
         {
             cmd.linear.x = 0.0;
             cmd.angular.z = 0.0;
+            ei_ = 0.0;  // 丢线时清零积分
         }
+        // 最终安全检查: 禁止发布 NaN/Inf
+        if (!std::isfinite(cmd.linear.x))  cmd.linear.x = 0.0;
+        if (!std::isfinite(cmd.angular.z)) cmd.angular.z = 0.0;
         pub_.publish(cmd);
 
         cv::waitKey(1);

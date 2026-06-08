@@ -107,26 +107,66 @@ class ImageProcessorNode:
         self.line_ctrl_pub.publish(String(data=act))
         rospy.loginfo("巡线控制发布: %s", act)
 
+    # ========== 导航点知识库 (名称 → 坐标) ==========
+    NAV_POINTS = {
+        "通道":       (6.03, 1.62, 1.57),
+        "障碍":       (6.03, 1.62, 1.57),
+        "战术拐角区": (6.03, 1.62, 1.57),
+        "手榴弹桌子": (0.03, 1.54, 1.57),
+        "手电筒桌子": (5.28, 3.65, 1.57),
+        "烟雾弹桌子": (0.05, 6.99, 1.57),
+        "终点":       (2.86, 8.24, 0.0),
+    }
+
+    @classmethod
+    def _lookup_nav_point(cls, name_hint: str):
+        """根据名称或关键词查找导航点坐标, 返回 (x, y, yaw) 或 None"""
+        name_hint = name_hint.strip()
+        # 精确匹配
+        for key, coords in cls.NAV_POINTS.items():
+            if key == name_hint:
+                return coords
+        # 模糊匹配: 关键词包含在名称中, 或名称包含在关键词中
+        for key, coords in cls.NAV_POINTS.items():
+            if key in name_hint or name_hint in key:
+                return coords
+        # 关键词兜底
+        kw_map = {
+            "拐角": "战术拐角区", "穿越": "战术拐角区", "通道": "通道",
+            "手榴弹": "手榴弹桌子", "手电": "手电筒桌子", "手电筒": "手电筒桌子",
+            "烟雾弹": "烟雾弹桌子", "终点": "终点",
+        }
+        for kw, key in kw_map.items():
+            if kw in name_hint:
+                return cls.NAV_POINTS.get(key)
+        return None
+
     @ensure_model_loaded
     def _process_nav_command(self, user_cmd: str):
+        # -------- 先尝试直接用关键词匹配 (不调用LLM, 最快最可靠) --------
+        result = self._lookup_nav_point(user_cmd)
+        if result is not None:
+            x, y, yaw = result
+            goal = {"x": x, "y": y, "yaw": yaw}
+            rospy.loginfo("导航决策(关键词匹配): %s → %s", user_cmd, goal)
+            self.nav_goal_pub.publish(String(data=json.dumps(goal)))
+            self.model_output_pub.publish(String(data=f"导航结果: {goal}"))
+            return
+
+        # -------- 关键词未命中, 调用LLM --------
         with self.map_lock:
             if self.current_map_image is None:
                 rospy.logwarn("暂无地图，无法导航。")
                 return
             map_img = self.current_map_image
 
-        kb = """
-        已知导航点:
-        - "通道/障碍": (6.03, 1.62)
-        - "手榴弹桌子": (0.03, 1.54)
-        - "手电筒桌子": (5.28, 3.65)
-        - "烟雾弹桌子": (0.05,6.99)
-        - "终点": (2.86, 8.24)
-        """
-
-        prompt = (f"你是机器人导航助手。\n{kb}\n"
-                  f"指令:除了终点朝向为0,其他朝向(yaw)统一使用1.57 {user_cmd}\n"
-                  "从已知导航点中选择一个最匹配的, 返回一个 JSON, 如 {{\"x\":1.0,\"y\":2.0,\"yaw\":1.57}}")
+        point_names = list(self.NAV_POINTS.keys())
+        prompt = (
+            f"已知导航点: {point_names}\n"
+            f"用户指令: {user_cmd}\n"
+            f"从已知导航点中选择最匹配的一个, 只输出该导航点的名称, "
+            f"不要输出坐标, 不要输出JSON, 不要输出其他内容。"
+        )
 
         try:
             res = self.model.chat(
@@ -134,38 +174,26 @@ class ImageProcessorNode:
                 msgs=[{"role":"user", "content": prompt}],
                 tokenizer=self.tokenizer
             )
-            txt = str(res).strip()
-            if "```json" in txt:
-                txt = txt.split("```json")[1].split("```")[0].strip()
+            name = str(res).strip()
+            # 清理常见多余格式
+            for prefix in ["导航点名称:", "名称:", "导航点:", "匹配结果:"]:
+                if prefix in name:
+                    name = name.split(prefix)[-1].strip()
+            # 去引号
+            name = name.strip('"').strip("'").strip("。").strip()
+            rospy.loginfo("LLM 返回导航点名称: %s", name)
 
-            # 从 LLM 返回中提取第一个有效 JSON 对象 (防止 LLM 返回多个 JSON)
-            txt = self._extract_first_json(txt)
-
-            rospy.loginfo("导航决策: %s", txt)
-            goal = json.loads(txt)
-            self.nav_goal_pub.publish(String(data=json.dumps(goal)))
-            self.model_output_pub.publish(String(data=f"导航结果: {txt}"))
+            result = self._lookup_nav_point(name)
+            if result is not None:
+                x, y, yaw = result
+                goal = {"x": x, "y": y, "yaw": yaw}
+                rospy.loginfo("导航决策(LLM+查表): %s → %s", name, goal)
+                self.nav_goal_pub.publish(String(data=json.dumps(goal)))
+                self.model_output_pub.publish(String(data=f"导航结果: {goal}"))
+            else:
+                rospy.logerr("LLM 返回的名称 '%s' 无法匹配任何已知导航点", name)
         except Exception as e:
             rospy.logerr("导航解析失败: %s\n%s", e, traceback.format_exc())
-
-    @staticmethod
-    def _extract_first_json(text: str) -> str:
-        """从文本中提取第一个有效的 JSON 对象 (处理 LLM 返回多个 JSON 的情况)"""
-        # 1) 找第一个 '{'
-        start = text.find('{')
-        if start == -1:
-            return text
-        # 2) 括号匹配, 找到对应的 '}'
-        depth = 0
-        for i in range(start, len(text)):
-            if text[i] == '{':
-                depth += 1
-            elif text[i] == '}':
-                depth -= 1
-                if depth == 0:
-                    return text[start:i + 1]
-        # 括号未闭合, 返回原始文本
-        return text
 
     @ensure_model_loaded
     def _custom(self, prompt: str):

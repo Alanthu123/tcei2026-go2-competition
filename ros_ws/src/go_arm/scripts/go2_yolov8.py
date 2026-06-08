@@ -30,21 +30,27 @@ class YoloPublisher(object):
     def __init__(self):
         rospy.init_node('yolo_publisher', anonymous=True)
 
+        # 1. 先初始化所有属性 (在创建订阅者之前!)
+        self.bridge = CvBridge()
+        self.fx = self.fy = self.cx = self.cy = None
+        self.rgb_image   = None
+        self.depth_image = None
+
+        # 2. 加载模型 (耗时, 但属性已就绪, 回调中有内参检查保护)
+        rospy.loginfo("加载 YOLO 模型 /root/Go2/best.pt ...")
+        self.model  = YOLO("/root/Go2/best.pt")
+        rospy.loginfo("YOLO 模型加载完成")
+
+        # 3. 创建发布者
         self.publisher_ = rospy.Publisher('mycaryolo', Mycaryolo, queue_size=10)
         self.annotated_pub = rospy.Publisher('yolo_annotated_image', Image, queue_size=10)
         # 新增: 发布到 /model_output, 格式与 go2_yolov8.cpp 的 modelCallback 兼容
         self.model_output_pub = rospy.Publisher('model_output', String, queue_size=10)
 
+        # 4. 最后创建订阅者 (此时所有属性已就绪)
         self.camera_info_sub = rospy.Subscriber('/camera/wrist/info', CameraInfo, self.camera_info_callback)
         self.rgb_sub = rospy.Subscriber('/camera/wrist/rgb',  Image, self.rgb_image_callback)
         self.depth_sub  = rospy.Subscriber('/camera/wrist/depth',Image, self.depth_image_callback)
-
-        self.bridge = CvBridge()
-        self.model  = YOLO("/root/Go2/best.pt")
-
-        self.fx = self.fy = self.cx = self.cy = None
-        self.rgb_image   = None
-        self.depth_image = None
 
     def camera_info_callback(self, msg: CameraInfo):
         self.fx, self.fy = msg.K[0], msg.K[4]

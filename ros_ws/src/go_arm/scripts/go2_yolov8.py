@@ -67,6 +67,11 @@ class YoloPublisher(object):
             rospy.logerr(f"CvBridge Depth Error: {e}")
 
     def process_yolo_results(self):
+        # 等待相机内参就绪
+        if self.fx is None or self.cx is None:
+            rospy.logwarn_throttle(5.0, "相机内参未就绪, 等待 /camera/wrist/info ...")
+            return
+
         results = self.model.predict(source=self.rgb_image)
         for r in results:
             boxes = r.boxes.xyxy.cpu().numpy().astype(int)

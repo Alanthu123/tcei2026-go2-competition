@@ -68,12 +68,38 @@ ModelToArmNode::ModelToArmNode(ros::NodeHandle &nh)
   pose_pub_ = nh.advertise<std_msgs::Float64MultiArray>(
       "/arm_end_pose_quaternion", 10);
 
-  R_ << 0.0078832, -0.96441021, -0.26429302,
-        -0.99996868, -0.00741594, -0.00276565,
-         0.00070724,  0.26430655, -0.96443846;
-  T_ << 0.10009959, 0.3903029, 0.39465327;
+  // 手眼标定矩阵 (相机坐标系 → 机器人基坐标系)
+  // 可通过 ROS 参数动态配置, 无需重新编译
+  std::vector<double> R_vec, T_vec;
+  if (nh.getParam("hand_eye_R", R_vec) && R_vec.size() == 9)
+  {
+    R_ << R_vec[0], R_vec[1], R_vec[2],
+          R_vec[3], R_vec[4], R_vec[5],
+          R_vec[6], R_vec[7], R_vec[8];
+    ROS_INFO("从参数加载 hand_eye_R");
+  }
+  else
+  {
+    R_ << 0.0078832, -0.96441021, -0.26429302,
+          -0.99996868, -0.00741594, -0.00276565,
+           0.00070724,  0.26430655, -0.96443846;
+    ROS_INFO("使用默认 hand_eye_R");
+  }
+  if (nh.getParam("hand_eye_T", T_vec) && T_vec.size() == 3)
+  {
+    T_ << T_vec[0], T_vec[1], T_vec[2];
+    ROS_INFO("从参数加载 hand_eye_T: [%.4f, %.4f, %.4f]", T_(0), T_(1), T_(2));
+  }
+  else
+  {
+    T_ << 0.10009959, 0.3903029, 0.39465327;
+    ROS_INFO("使用默认 hand_eye_T: [%.4f, %.4f, %.4f]", T_(0), T_(1), T_(2));
+  }
 
   ROS_INFO("ModelToArmNode 启动，等待 camera_info 和 model_output...");
+  ROS_INFO("手眼标定 R=[%.4f %.4f %.4f; %.4f %.4f %.4f; %.4f %.4f %.4f]",
+           R_(0,0),R_(0,1),R_(0,2),R_(1,0),R_(1,1),R_(1,2),R_(2,0),R_(2,1),R_(2,2));
+  ROS_INFO("手眼标定 T=[%.4f, %.4f, %.4f]", T_(0), T_(1), T_(2));
 }
 
 void ModelToArmNode::cameraInfoCallback(const sensor_msgs::CameraInfoConstPtr &info)
@@ -144,8 +170,8 @@ void ModelToArmNode::modelCallback(const std_msgs::String::ConstPtr &msg)
   }
 
   // ===== 时间滤波: 累积最近 N 帧, 取平均 =====
-  static const size_t HISTORY_SIZE = 5;  // 保留最近5帧
-  static const double POS_VARIANCE_THRESH = 0.005;  // 位置方差阈值(m²)
+  static const size_t HISTORY_SIZE = 3;  // 保留最近3帧 (降低延迟)
+  static const double POS_VARIANCE_THRESH = 0.02;  // 位置方差阈值(m²) — 放宽以适应更多场景
 
   detections_history_.push_back(new_detections[0]);  // 只取第一个目标的坐标
   if (detections_history_.size() > HISTORY_SIZE)

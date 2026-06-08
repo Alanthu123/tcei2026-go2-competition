@@ -90,11 +90,8 @@ class YoloPublisher(object):
                 cy_pix = (y1 + y2) / 2.0
                 cx_i, cy_i = int(cx_pix), int(cy_pix)
 
-                depth = float('nan')
-                if (self.depth_image is not None and
-                    0 <= cy_i < self.depth_image.shape[0] and
-                    0 <= cx_i < self.depth_image.shape[1]):
-                    depth = float(self.depth_image[cy_i, cx_i])
+                # 从中心点邻域搜索有效深度值 (中心像素可能为NaN/0)
+                depth = self._get_valid_depth(cx_i, cy_i, radius=10)
 
                 roi = self.rgb_image[y1:y2, x1:x2]
                 bottle_angle = None
@@ -109,16 +106,16 @@ class YoloPublisher(object):
                     label,
                     (x1, y1 - 10),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6, 
+                    0.6,
                     (0, 0, 255),
-                    2 
+                    2
                 )
 
                 msg = Mycaryolo()
                 msg.conf = conf
                 msg.name = name
                 msg.pose = Pose()
-                if not np.isnan(depth):
+                if not np.isnan(depth) and depth > 0.01:
                     cam_x, cam_y, cam_z = self.convert_pixel_to_camera_coordinates(
                         cx_pix, cy_pix, depth
                     )
@@ -129,11 +126,11 @@ class YoloPublisher(object):
 
                     # 同时发布到 /model_output, 格式与 go2_yolov8.cpp 兼容
                     angle_str_model = f"{bottle_angle:.2f}" if bottle_angle is not None else "0.00"
-                    model_text = f"({cx_i},{cy_i},{depth:.2f}m,{angle_str_model})"
+                    model_text = f"({cx_i},{cy_i},{depth:.3f}m,{angle_str_model})"
                     self.model_output_pub.publish(String(data=model_text))
                     rospy.loginfo("YOLO→/model_output: %s", model_text)
                 else:
-                    rospy.logwarn("Invalid depth, skipping pose publish")
+                    rospy.logwarn_throttle(2.0, "深度值无效 (%.3f), 跳过坐标发布", depth)
 
         try:
             annotated_msg = self.bridge.cv2_to_imgmsg(self.rgb_image, encoding="bgr8")
@@ -169,6 +166,22 @@ class YoloPublisher(object):
                 return angle - 90  
             else:
                 return angle + 90  
+
+    def _get_valid_depth(self, cx, cy, radius=10):
+        """在(cx,cy)邻域内搜索有效深度值, 返回中位数"""
+        if self.depth_image is None:
+            return float('nan')
+        h, w = self.depth_image.shape
+        y1 = max(0, cy - radius)
+        y2 = min(h, cy + radius + 1)
+        x1 = max(0, cx - radius)
+        x2 = min(w, cx + radius + 1)
+        region = self.depth_image[y1:y2, x1:x2]
+        # 取有效值 (非NaN, >0)
+        valid = region[np.isfinite(region) & (region > 0.01)]
+        if len(valid) == 0:
+            return float('nan')
+        return float(np.median(valid))
 
     def convert_pixel_to_camera_coordinates(self, u, v, depth):
         x = (u - self.cx) * depth / self.fx

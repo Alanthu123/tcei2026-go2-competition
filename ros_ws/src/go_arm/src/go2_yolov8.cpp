@@ -24,6 +24,7 @@
 #include <regex>
 #include <cmath>
 #include <vector>
+#include <deque>
 
 class ModelToArmNode
 {
@@ -47,6 +48,7 @@ private:
   Eigen::Vector3d T_;
 
   std::vector<std::array<double, 8>> detections_;
+  std::deque<std::array<double, 8>> detections_history_;  // 时间滤波缓冲区
   size_t current_idx_;
 };
 
@@ -98,7 +100,9 @@ void ModelToArmNode::modelCallback(const std_msgs::String::ConstPtr &msg)
 
   static const std::regex re(R"(\(\s*(\d+)\s*,\s*(\d+)\s*,\s*([\d\.]+)m\s*,\s*([\d\.\-]+)\s*\))");
   std::sregex_iterator it(s.begin(), s.end(), re), end;
-  detections_.clear();
+
+  // 临时存储本次解析结果
+  std::vector<std::array<double, 8>> new_detections;
 
   for (; it != end; ++it)
   {
@@ -121,24 +125,71 @@ void ModelToArmNode::modelCallback(const std_msgs::String::ConstPtr &msg)
 
     Eigen::Quaterniond q_final = q_fixed * q_rot;
 
-    detections_.push_back({
+    new_detections.push_back({
         p_base.x(), p_base.y(), p_base.z(),
         q_final.x(), q_final.y(), q_final.z(), q_final.w(),
         angle_deg
     });
 
     ROS_INFO("检测到目标 %zu: [%.3f, %.3f, %.3f], angle=%.1f°",
-             detections_.size(), p_base.x(), p_base.y(), p_base.z(), angle_deg);
+             new_detections.size(), p_base.x(), p_base.y(), p_base.z(), angle_deg);
   }
 
-  if (detections_.empty())
+  if (new_detections.empty())
   {
     ROS_WARN("无法提取任何检测结果");
+    // 清空历史缓冲区 (丢失目标)
+    detections_history_.clear();
     return;
   }
 
+  // ===== 时间滤波: 累积最近 N 帧, 取平均 =====
+  static const size_t HISTORY_SIZE = 5;  // 保留最近5帧
+  static const double POS_VARIANCE_THRESH = 0.005;  // 位置方差阈值(m²)
+
+  detections_history_.push_back(new_detections[0]);  // 只取第一个目标的坐标
+  if (detections_history_.size() > HISTORY_SIZE)
+    detections_history_.pop_front();
+
+  // 计算历史坐标的均值和方差
+  double sum_x = 0, sum_y = 0, sum_z = 0;
+  double sum_x2 = 0, sum_y2 = 0, sum_z2 = 0;
+  size_t n = detections_history_.size();
+  for (const auto &d : detections_history_)
+  {
+    sum_x += d[0]; sum_y += d[1]; sum_z += d[2];
+    sum_x2 += d[0]*d[0]; sum_y2 += d[1]*d[1]; sum_z2 += d[2]*d[2];
+  }
+  double var_x = sum_x2/n - (sum_x/n)*(sum_x/n);
+  double var_y = sum_y2/n - (sum_y/n)*(sum_y/n);
+  double var_z = sum_z2/n - (sum_z/n)*(sum_z/n);
+  double total_var = var_x + var_y + var_z;
+
+  // 方差过大 → 坐标不稳定, 等待更多帧
+  if (n >= 3 && total_var > POS_VARIANCE_THRESH)
+  {
+    ROS_WARN_THROTTLE(1.0, "目标坐标不稳定 (var=%.5f > %.5f), 等待收敛",
+                      total_var, POS_VARIANCE_THRESH);
+    return;
+  }
+
+  // 坐标稳定 → 使用历史均值
+  std::array<double, 8> avg = new_detections[0];  // 复制角度等信息
+  avg[0] = sum_x / n;
+  avg[1] = sum_y / n;
+  avg[2] = sum_z / n;
+
+  ROS_INFO("目标坐标已稳定: [%.3f, %.3f, %.3f] (n=%zu, var=%.5f)",
+           avg[0], avg[1], avg[2], n, total_var);
+
+  detections_.clear();
+  detections_.push_back(avg);
+
   current_idx_ = 0;
   publishDetection(current_idx_);
+
+  // 发布后清空历史, 等待下一批检测
+  detections_history_.clear();
 }
 
 void ModelToArmNode::publishDetection(size_t idx)

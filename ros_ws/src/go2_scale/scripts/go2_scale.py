@@ -214,7 +214,7 @@ class ImageProcessorNode:
             )
             out = str(res).strip()
             self.model_output_pub.publish(String(data=out))
-            rospy.loginfo("模型输出发布。")
+            rospy.loginfo("模型输出: %s", out)
         except Exception as e:
             rospy.logerr("视觉/抓取处理失败: %s\n%s", e, traceback.format_exc())
 

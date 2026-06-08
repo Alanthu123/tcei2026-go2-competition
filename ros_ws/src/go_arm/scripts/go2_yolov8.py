@@ -18,6 +18,7 @@
 # -*- coding: utf-8 -*-
 import rospy
 from sensor_msgs.msg import Image, CameraInfo
+from std_msgs.msg import String
 from geometry_msgs.msg import Pose
 from go_arm.msg import Mycaryolo
 import cv2
@@ -31,6 +32,8 @@ class YoloPublisher(object):
 
         self.publisher_ = rospy.Publisher('mycaryolo', Mycaryolo, queue_size=10)
         self.annotated_pub = rospy.Publisher('yolo_annotated_image', Image, queue_size=10)
+        # 新增: 发布到 /model_output, 格式与 go2_yolov8.cpp 的 modelCallback 兼容
+        self.model_output_pub = rospy.Publisher('model_output', String, queue_size=10)
 
         self.camera_info_sub = rospy.Subscriber('/camera/wrist/info', CameraInfo, self.camera_info_callback)
         self.rgb_sub = rospy.Subscriber('/camera/wrist/rgb',  Image, self.rgb_image_callback)
@@ -112,6 +115,12 @@ class YoloPublisher(object):
                     msg.pose.position.y = cam_y
                     msg.pose.position.z = cam_z
                     self.publisher_.publish(msg)
+
+                    # 同时发布到 /model_output, 格式与 go2_yolov8.cpp 兼容
+                    angle_str_model = f"{bottle_angle:.2f}" if bottle_angle is not None else "0.00"
+                    model_text = f"({cx_i},{cy_i},{depth:.2f}m,{angle_str_model})"
+                    self.model_output_pub.publish(String(data=model_text))
+                    rospy.loginfo("YOLO→/model_output: %s", model_text)
                 else:
                     rospy.logwarn("Invalid depth, skipping pose publish")
 

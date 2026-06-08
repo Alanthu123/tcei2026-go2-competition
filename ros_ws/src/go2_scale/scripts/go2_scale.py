@@ -126,7 +126,7 @@ class ImageProcessorNode:
 
         prompt = (f"你是机器人导航助手。\n{kb}\n"
                   f"指令:除了终点朝向为0,其他朝向(yaw)统一使用1.57 {user_cmd}\n"
-                  "只返回 JSON，如 {\"x\":1.0,\"y\":2.0,\"yaw\":1.57}")
+                  "从已知导航点中选择一个最匹配的, 返回一个 JSON, 如 {{\"x\":1.0,\"y\":2.0,\"yaw\":1.57}}")
 
         try:
             res = self.model.chat(
@@ -138,12 +138,34 @@ class ImageProcessorNode:
             if "```json" in txt:
                 txt = txt.split("```json")[1].split("```")[0].strip()
 
+            # 从 LLM 返回中提取第一个有效 JSON 对象 (防止 LLM 返回多个 JSON)
+            txt = self._extract_first_json(txt)
+
             rospy.loginfo("导航决策: %s", txt)
             goal = json.loads(txt)
             self.nav_goal_pub.publish(String(data=json.dumps(goal)))
             self.model_output_pub.publish(String(data=f"导航结果: {txt}"))
         except Exception as e:
             rospy.logerr("导航解析失败: %s\n%s", e, traceback.format_exc())
+
+    @staticmethod
+    def _extract_first_json(text: str) -> str:
+        """从文本中提取第一个有效的 JSON 对象 (处理 LLM 返回多个 JSON 的情况)"""
+        # 1) 找第一个 '{'
+        start = text.find('{')
+        if start == -1:
+            return text
+        # 2) 括号匹配, 找到对应的 '}'
+        depth = 0
+        for i in range(start, len(text)):
+            if text[i] == '{':
+                depth += 1
+            elif text[i] == '}':
+                depth -= 1
+                if depth == 0:
+                    return text[start:i + 1]
+        # 括号未闭合, 返回原始文本
+        return text
 
     @ensure_model_loaded
     def _custom(self, prompt: str):
@@ -171,7 +193,7 @@ class ImageProcessorNode:
     def _command_thread(self):
         grab_kw = ["抓取", "拿取", "拾取", "位置", "识别"]
         line_kw = ["巡线", "沿线", "停止巡线"]
-        nav_kw  = ["导航", "穿过", "终点", "桌子", "手榴弹", "烟雾弹", "手电", "通道", "障碍"]
+        nav_kw  = ["导航", "穿过", "穿越", "终点", "桌子", "手榴弹", "烟雾弹", "手电", "通道", "障碍", "拐角", "物资"]
 
         while not rospy.is_shutdown():
             try:

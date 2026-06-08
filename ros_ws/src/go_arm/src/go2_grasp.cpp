@@ -58,9 +58,9 @@ private:
 
     geometry_msgs::PoseStamped home_, cur_;
     std::atomic<bool> busy_{false}, got_pose_{false};
-    std::atomic<float> grip_width_{0.06f};
-    const float kOpen = 0.06f;
-    const float kClose = 0.005f;
+    std::atomic<float> grip_width_{0.03f};
+    const float kOpen = 0.03f;     // 完全张开 (比赛有效范围 0~0.03)
+    const float kClose = 0.001f;   // 完全闭合
     std::mutex mtx_;
 
     geometry_msgs::PoseStamped last_target_;
@@ -270,6 +270,11 @@ void PickAndPlaceNode::doPick(geometry_msgs::PoseStamped target)
     ROS_INFO("稳定等待 %.1f s 完成, 开始抓取", stabilize_delay_);
 
     bool final_ok = false;
+
+    // ===== 开始前: 确保夹爪完全张开 =====
+    setGripper(kOpen);
+    ros::Duration(0.3).sleep();
+    ROS_INFO("夹爪已完全张开 (%.3f)", kOpen);
 
     // ===== 重试循环 =====
     for (int attempt = 0; attempt < max_retries_ && ros::ok(); ++attempt)
